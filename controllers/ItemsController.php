@@ -287,8 +287,6 @@ class ItemsController extends ApiController {
 				$this->libraryVersion = Zotero_Libraries::getUpdatedVersion($this->objectLibraryID);
 			}
 			
-			$includeTrashed = $this->queryParams['includeTrashed'];
-			
 			if ($this->scopeObject) {
 				$this->allowMethods(array('GET', 'POST'));
 				
@@ -397,7 +395,6 @@ class ItemsController extends ApiController {
 						$this->objectLibraryID,
 						true,
 						$this->queryParams,
-						$includeTrashed,
 						$this->permissions
 					);
 				}
@@ -406,13 +403,12 @@ class ItemsController extends ApiController {
 					$this->allowMethods(array('GET'));
 					
 					$title = "Deleted Items";
+					$this->queryParams['includeTrashed'] = true;
 					$this->queryParams['trashedItemsOnly'] = true;
-					$includeTrashed = true;
 					$results = Zotero_Items::search(
 						$this->objectLibraryID,
 						false,
 						$this->queryParams,
-						$includeTrashed,
 						$this->permissions
 					);
 				}
@@ -482,7 +478,6 @@ class ItemsController extends ApiController {
 							$this->objectLibraryID,
 							false,
 							$this->queryParams,
-							$includeTrashed,
 							$this->permissions
 						);
 					}
@@ -580,7 +575,6 @@ class ItemsController extends ApiController {
 									$this->objectLibraryID,
 									false,
 									$this->queryParams,
-									$includeTrashed,
 									$this->permissions
 								);
 							}
@@ -606,7 +600,6 @@ class ItemsController extends ApiController {
 							$this->objectLibraryID,
 							false,
 							$this->queryParams,
-							$includeTrashed,
 							$this->permissions
 						);
 					}
@@ -624,7 +617,6 @@ class ItemsController extends ApiController {
 					$this->objectLibraryID,
 					false,
 					$this->queryParams,
-					$includeTrashed,
 					$this->permissions
 				);
 			}
@@ -746,10 +738,15 @@ class ItemsController extends ApiController {
 			}
 			
 			// File viewing
-			if ($this->fileView) {
-				$url = Zotero_Attachments::getTemporaryURL($item, !empty($_GET['int']));
+			if ($this->fileView || $this->fileViewURL) {
+				$url = Zotero_Attachments::getTemporaryURL($item);
 				if (!$url) {
 					$this->e500();
+				}
+				if ($this->fileViewURL) {
+					header('Content-Type: text/plain');
+					echo $url . "\n";
+					$this->end();
 				}
 				StatsD::increment("storage.view", 1);
 				$this->redirect($url);
@@ -909,17 +906,19 @@ class ItemsController extends ApiController {
 				// Reject file if it would put account over quota
 				if ($group) {
 					$quota = Zotero_Storage::getEffectiveUserQuota($group->ownerUserID);
-					$usage = Zotero_Storage::getUserUsage($group->ownerUserID);
+					$usage = Zotero_Storage::getUserUsage($group->ownerUserID, 'b');
 				}
 				else {
 					$quota = Zotero_Storage::getEffectiveUserQuota($this->objectUserID);
-					$usage = Zotero_Storage::getUserUsage($this->objectUserID);
+					$usage = Zotero_Storage::getUserUsage($this->objectUserID, 'b');
 				}
-				$total = $usage['total'];
-				$fileSizeMB = round($info->size / 1024 / 1024, 1);
-				if ($total + $fileSizeMB > $quota) {
+				$requestedMB = round(($usage['total'] + $info->size) / 1024 / 1024, 1);
+				if ($requestedMB > $quota) {
 					StatsD::increment("storage.upload.quota", 1);
-					$this->e413("File would exceed quota ($total + $fileSizeMB > $quota)");
+					$usageMB = round($usage['total'] / 1024 / 1024, 1);
+					header("Zotero-Storage-Usage: $usageMB");
+					header("Zotero-Storage-Quota: $quota");
+					$this->e413("File would exceed quota ($requestedMB > $quota)");
 				}
 				
 				Zotero_DB::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");

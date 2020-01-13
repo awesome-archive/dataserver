@@ -252,7 +252,7 @@ class Zotero_Item extends Zotero_DataObject {
 		
         if (!$unformatted) {
 			// Multipart date fields
-			if (Zotero_ItemFields::isFieldOfBase($fieldID, 'date')) {
+			if (Zotero_ItemFields::isDate($fieldID)) {
 				$value = Zotero_Date::multipartToStr($value);
 			}
 		}
@@ -266,18 +266,28 @@ class Zotero_Item extends Zotero_DataObject {
 		$title = $this->getField('title', false, true);
 		$itemTypeID = $this->itemTypeID;
 		
-		if (!$title && ($itemTypeID == 8 || $itemTypeID == 10)) { // 'letter' and 'interview' itemTypeIDs
+		$itemTypeLetter = Zotero_ItemTypes::getID('letter');
+		$itemTypeInterview = Zotero_ItemTypes::getID('interview');
+		$itemTypeCase = Zotero_ItemTypes::getID('case');
+		
+		$creatorTypeAuthor = Zotero_CreatorTypes::getID('author');
+		$creatorTypeRecipient = Zotero_CreatorTypes::getID('recipient');
+		$creatorTypeInterviewer = Zotero_CreatorTypes::getID('interviewer');
+		$creatorTypeInterviewee = Zotero_CreatorTypes::getID('interviewee');
+		
+		// 'letter' or 'interview'
+		if (!$title && ($itemTypeID == $itemTypeLetter || $itemTypeID == $itemTypeInterview)) {
 			$creators = $this->getCreators();
 			$authors = array();
 			$participants = array();
 			if ($creators) {
 				foreach ($creators as $creator) {
-					if (($itemTypeID == 8 && $creator['creatorTypeID'] == 16) || // 'letter'/'recipient'
-							($itemTypeID == 10 && $creator['creatorTypeID'] == 7)) { // 'interview'/'interviewer'
+					if (($itemTypeID == $itemTypeLetter && $creator['creatorTypeID'] == $creatorTypeRecipient) ||
+							($itemTypeID == $itemTypeInterview && $creator['creatorTypeID'] == $creatorTypeInterviewer)) {
 						$participants[] = $creator;
 					}
-					else if (($itemTypeID == 8 && $creator['creatorTypeID'] == 1) ||   // 'letter'/'author'
-							($itemTypeID == 10 && $creator['creatorTypeID'] == 6)) { // 'interview'/'interviewee'
+					else if (($itemTypeID == $itemTypeLetter && $creator['creatorTypeID'] == $creatorTypeAuthor) ||
+							($itemTypeID == $itemTypeInterview && $creator['creatorTypeID'] == $creatorTypeInterviewee)) {
 						$authors[] = $creator;
 					}
 				}
@@ -339,7 +349,7 @@ class Zotero_Item extends Zotero_DataObject {
 				
 				$loc = Zotero_ItemTypes::getLocalizedString($itemTypeID);
 				// Letter
-				if ($itemTypeID == 8) {
+				if ($itemTypeID == $itemTypeLetter) {
 					$loc .= ' to ';
 				}
 				// Interview
@@ -364,7 +374,8 @@ class Zotero_Item extends Zotero_DataObject {
 			$title .= join('; ', $strParts);
 			$title .= ']';
 		}
-		else if ($itemTypeID == 17) { // 'case' itemTypeID
+		// 'case'
+		else if ($itemTypeID == $itemTypeCase) {
 			if ($title) {
 				$reporter = $this->getField('reporter');
 				if ($reporter) {
@@ -386,7 +397,7 @@ class Zotero_Item extends Zotero_DataObject {
 				}
 				
 				$creators = $this->getCreators();
-				if ($creators && $creators[0]['creatorTypeID'] === 1) {
+				if ($creators && $creators[0]['creatorTypeID'] === $creatorTypeAuthor) {
 					$strParts[] = $creators[0]['ref']->lastName;
 				}
 				
@@ -726,8 +737,7 @@ class Zotero_Item extends Zotero_DataObject {
 		
 		if (!$loadIn) {
 			// Save date field as multipart date
-			if (Zotero_ItemFields::isFieldOfBase($fieldID, 'date') &&
-					!Zotero_Date::isMultipart($value)) {
+			if (Zotero_ItemFields::isDate($fieldID) && !Zotero_Date::isMultipart($value)) {
 				$value = Zotero_Date::strToMultipart($value);
 				if ($value === "") {
 					$value = false;
@@ -1126,9 +1136,7 @@ class Zotero_Item extends Zotero_DataObject {
 						
 						// Check length
 						if (strlen($value) > $max) {
-							$fieldName = Zotero_ItemFields::getLocalizedString(
-								$this->_itemTypeID, $fieldID
-							);
+							$fieldName = Zotero_ItemFields::getLocalizedString($fieldID);
 							$msg = "=$fieldName field value " .
 								 "'" . mb_substr($value, 0, 50) . "…' too long";
 							if ($this->_key) {
@@ -1520,9 +1528,7 @@ class Zotero_Item extends Zotero_DataObject {
 						
 						// Check length
 						if (strlen($value) > $max) {
-							$fieldName = Zotero_ItemFields::getLocalizedString(
-								$this->_itemTypeID, $fieldID
-							);
+							$fieldName = Zotero_ItemFields::getLocalizedString($fieldID);
 							$msg = "=$fieldName field value " .
 								 "'" . mb_substr($value, 0, 50) . "...' too long";
 							if ($this->_key) {
@@ -2997,6 +3003,57 @@ class Zotero_Item extends Zotero_DataObject {
 	}
 	
 	
+	/**
+	 * Looks for attachment in the following order: oldest PDF attachment matching parent URL,
+	 * oldest non-PDF attachment matching parent URL, oldest PDF attachment not matching URL,
+	 * old non-PDF attachment not matching URL
+	 *
+	 * @return {Zotero.Item|FALSE} - Attachment item or FALSE if none
+	 */
+	public function getBestAttachment() {
+		if (!$this->isRegularItem()) {
+			throw new Exception("getBestAttachment() can only be called on regular items");
+		}
+		$attachments = $this->getBestAttachments();
+		return $attachments ? $attachments[0] : false;
+	}
+	
+	
+	/**
+	 * Looks for attachment in the following order: oldest PDF attachment matching parent URL,
+	 * oldest PDF attachment not matching parent URL, oldest non-PDF attachment matching parent URL,
+	 * old non-PDF attachment not matching parent URL
+	 *
+	 * Unlike the client, this doesn't include linked-file attachments.
+	 *
+	 * @return {Zotero.Item[]} - An array of Zotero items
+	 */
+	public function getBestAttachments() {
+		if (!$this->isRegularItem()) {
+			throw new Exception("getBestAttachments() can only be called on regular items");
+		}
+		
+		$url = $this->getField('url');
+		$urlFieldID = Zotero_ItemFields::getID('url');
+		$linkedURLLinkMode = Zotero_Attachments::linkModeNameToNumber('linked_url') + 1;
+		$linkedFileLinkMode = Zotero_Attachments::linkModeNameToNumber('linked_file') + 1;
+		
+		$sql = "SELECT IA.itemID FROM itemAttachments IA NATURAL JOIN items I "
+			. "LEFT JOIN itemData ID ON (IA.itemID=ID.itemID AND fieldID=$urlFieldID) "
+			. "WHERE sourceItemID=? AND linkMode NOT IN ($linkedURLLinkMode, $linkedFileLinkMode) "
+			. "AND IA.itemID NOT IN (SELECT itemID FROM deletedItems) "
+			. "ORDER BY mimeType='application/pdf' DESC, value=? DESC, dateAdded ASC";
+		$itemIDs = Zotero_DB::columnQuery(
+			$sql,
+			[
+				$this->id,
+				$url
+			],
+			Zotero_Shards::getByLibraryID($this->libraryID)
+		);
+		return $itemIDs ? Zotero_Items::get($this->libraryID, $itemIDs) : [];
+	}
+	
 	
 	//
 	// Methods dealing with tags
@@ -3146,7 +3203,7 @@ class Zotero_Item extends Zotero_DataObject {
 		// Title
 		$tr = $html->addChild('tr');
 		$tr->addAttribute('class', 'title');
-		$tr->addChild('th', Zotero_ItemFields::getLocalizedString(false, 'title'));
+		$tr->addChild('th', Zotero_ItemFields::getLocalizedString('title'));
 		$tr->addChild('td', htmlspecialchars($item->getDisplayTitle(true)));
 		*/
 		
@@ -3154,7 +3211,7 @@ class Zotero_Item extends Zotero_DataObject {
 		Zotero_Atom::addHTMLRow(
 			$html,
 			"itemType",
-			Zotero_ItemFields::getLocalizedString(false, 'itemType'),
+			Zotero_ItemFields::getLocalizedString('itemType'),
 			Zotero_ItemTypes::getLocalizedString($this->itemTypeID)
 		);
 		
@@ -3213,7 +3270,7 @@ class Zotero_Item extends Zotero_DataObject {
 				continue;
 			}
 			
-			$localizedFieldName = Zotero_ItemFields::getLocalizedString(false, $field);
+			$localizedFieldName = Zotero_ItemFields::getLocalizedString($field);
 			
 			$value = $this->getField($field);
 			$value = trim($value);
@@ -3369,14 +3426,8 @@ class Zotero_Item extends Zotero_DataObject {
 	public function getUncachedResponseProps($requestParams, Zotero_Permissions $permissions) {
 		$parent = $this->getSource();
 		$isRegularItem = !$parent && $this->isRegularItem();
+		$bestAttachmentDetails = false;
 		$downloadDetails = false;
-		if ($requestParams['publications'] || $permissions->canAccess($this->libraryID, 'files')) {
-			$downloadDetails = Zotero_Storage::getDownloadDetails($this);
-			// Link to publications download URL in My Publications
-			if ($downloadDetails && $requestParams['publications']) {
-				$downloadDetails['url'] = str_replace("/items/", "/publications/items/", $downloadDetails['url']);
-			}
-		}
 		if ($isRegularItem) {
 			if ($requestParams['publications']) {
 				$numChildren = $this->numPublicationsChildren();
@@ -3387,14 +3438,38 @@ class Zotero_Item extends Zotero_DataObject {
 			else {
 				$numChildren = $this->numAttachments();
 			}
+			
+			if ($requestParams['publications'] || $permissions->canAccess($this->libraryID, 'files')) {
+				$bestAttachment = $this->getBestAttachment();
+				if ($bestAttachment) {
+					$dd = Zotero_Storage::getDownloadDetails($bestAttachment);
+					if ($dd) {
+						$bestAttachmentDetails = [
+							'key' => Zotero_API::getItemURI($bestAttachment),
+							'type' => 'application/json',
+							'attachmentType' => $bestAttachment->attachmentContentType
+						];
+						$bestAttachmentDetails['attachmentSize'] = $dd['size'] ?? false;
+					}
+				}
+			}
 		}
 		else {
 			$numChildren = false;
+			
+			if ($requestParams['publications'] || $permissions->canAccess($this->libraryID, 'files')) {
+				$downloadDetails = Zotero_Storage::getDownloadDetails($this);
+				// Link to publications download URL in My Publications
+				if ($downloadDetails && $requestParams['publications']) {
+					$downloadDetails['url'] = str_replace("/items/", "/publications/items/", $downloadDetails['url']);
+				}
+			}
 		}
 		
 		return [
-			"downloadDetails" => $downloadDetails,
-			"numChildren" => $numChildren
+			"bestAttachmentDetails" => $bestAttachmentDetails,
+			"numChildren" => $numChildren,
+			"downloadDetails" => $downloadDetails
 		];
 	}
 	
@@ -3416,6 +3491,7 @@ class Zotero_Item extends Zotero_DataObject {
 		$isPublications = $requestParams['publications'];
 		
 		$props = $this->getUncachedResponseProps($requestParams, $permissions);
+		$bestAttachmentDetails = $props['bestAttachmentDetails'];
 		$downloadDetails = $props['downloadDetails'];
 		$numChildren = $props['numChildren'];
 		
@@ -3437,7 +3513,8 @@ class Zotero_Item extends Zotero_DataObject {
 			. md5(
 				$version
 				. json_encode($cachedParams)
-				. ($downloadDetails ? 'hasFile' : '')
+				. ($bestAttachmentDetails ? json_encode($bestAttachmentDetails) : '')
+				. ($downloadDetails ? json_encode($downloadDetails) : '')
 				// For groups, include the group WWW URL, which can change
 				. ($libraryType == 'group' ? Zotero_URI::getItemURI($this, true) : '')
 			)
@@ -3491,6 +3568,22 @@ class Zotero_Item extends Zotero_DataObject {
 				'type' => 'text/html'
 			]
 		];
+		
+		if ($bestAttachmentDetails) {
+			$details = $bestAttachmentDetails;
+			$json['links']['attachment'] = [
+				'href' => $details['key']
+			];
+			if (!empty($details['type'])) {
+				$json['links']['attachment']['type'] = $details['type'];
+			}
+			if (!empty($details['attachmentType'])) {
+				$json['links']['attachment']['attachmentType'] = $details['attachmentType'];
+			}
+			if (!empty($details['attachmentSize'])) {
+				$json['links']['attachment']['attachmentSize'] = $details['attachmentSize'];
+			}
+		}
 		
 		if ($parent) {
 			$parentItem = Zotero_Items::get($this->libraryID, $parent);

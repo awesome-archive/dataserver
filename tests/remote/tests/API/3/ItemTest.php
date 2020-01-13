@@ -30,13 +30,13 @@ require_once 'APITests.inc.php';
 require_once 'include/api3.inc.php';
 
 class ItemTests extends APITests {
-	public static function setUpBeforeClass() {
+	public static function setUpBeforeClass(): void {
 		parent::setUpBeforeClass();
 		API::userClear(self::$config['userID']);
 		API::groupClear(self::$config['ownedPrivateGroupID']);
 	}
 	
-	public static function tearDownAfterClass() {
+	public static function tearDownAfterClass(): void {
 		parent::tearDownAfterClass();
 		API::userClear(self::$config['userID']);
 		API::groupClear(self::$config['ownedPrivateGroupID']);
@@ -405,6 +405,24 @@ class ItemTests extends APITests {
 		$data = API::getItem($objectKey, $this, 'json')['data'];
 		// But the value shouldn't have actually changed
 		$this->assertEquals($originalDateAdded, $data['dateAdded']);
+		
+		// Allow if the there's a merge-tracking relation
+		$newDateAdded = "2019-04-13T01:48:54Z";
+		$data['dateAdded'] = $newDateAdded;
+		$data['relations'] = [
+			"dc:replaces" => [
+				"http://zotero.org/users/" . self::$config['userID'] . "/items/AAAAAAAA"
+			]
+		];
+		$response = API::userPut(
+			self::$config['userID'],
+			"$objectTypePlural/$objectKey",
+			json_encode($data)
+		);
+		$this->assert204($response);
+		$data = API::getItem($objectKey, $this, 'json')['data'];
+		// The value should have changed
+		$this->assertEquals($newDateAdded, $data['dateAdded']);
 	}
 	
 	
@@ -1359,7 +1377,6 @@ class ItemTests extends APITests {
 	
 	/**
 	 * @group attachments
-	 * @group classic-sync
 	 */
 	public function testCreateLinkedFileAttachment() {
 		$key = API::createItem("book", false, $this, 'key');
@@ -1376,97 +1393,6 @@ class ItemTests extends APITests {
 		$this->assertArrayNotHasKey('filename', $json);
 		$this->assertArrayNotHasKey('md5', $json);
 		$this->assertArrayNotHasKey('mtime', $json);
-		
-		// Until classic sync is removed, paths should be stored as Mozilla-style relative descriptors,
-		// at which point they should be batch converted
-		require_once 'include/sync.inc.php';
-		require_once '../../include/Unicode.inc.php';
-		require_once '../../model/Attachments.inc.php';
-		$sessionID = \Sync::login();
-		$xml = \Sync::updated($sessionID, time() - 10);
-		$path2 = (string) array_get_first($xml->xpath('//items/item[@key="' . $json['key'] . '"]/path'));
-		$this->assertEquals(
-			$path,
-			"attachments:" . \Zotero_Attachments::decodeRelativeDescriptorString(substr($path2, 12))
-		);
-	}
-	
-	/**
-	 * @group attachments
-	 * @group classic-sync
-	 */
-	public function testLinkedFileAttachmentPathViaSync() {
-		require_once 'include/sync.inc.php';
-		require_once '../../include/Unicode.inc.php';
-		require_once '../../model/Attachments.inc.php';
-		require_once '../../model/ID.inc.php';
-		
-		$sessionID = \Sync::login();
-		$xml = \Sync::updated($sessionID, time());
-		
-		$updateKey = (string) $xml['updateKey'];
-		$itemKey = \Zotero_ID::getKey();
-		$filename = "tést.pdf";
-		
-		// Create item via sync
-		$data = '<data version="9"><items><item libraryID="'
-			. self::$config['libraryID'] . '" '
-			. 'key="' . $itemKey . '" '
-			. 'itemType="attachment" '
-			. 'dateAdded="2016-03-07 04:53:20" '
-			. 'dateModified="2016-03-07 04:54:09" '
-			. 'mimeType="application/pdf" '
-			. 'linkMode="2">'
-			// See note in testCreateLinkedFileAttachment
-			. '<path>attachments:' . \Zotero_Attachments::encodeRelativeDescriptorString($filename) . '</path>'
-			. '</item></items></data>';
-		$response = \Sync::upload($sessionID, $updateKey, $data);
-		\Sync::waitForUpload($sessionID, $response, $this);
-		\Sync::logout($sessionID);
-		
-		$json = API::getItem($itemKey, $this, 'json');
-		$this->assertEquals('linked_file', $json['data']['linkMode']);
-		// Linked file should have path
-		$this->assertEquals("attachments:" . $filename, $json['data']['path']);
-	}
-	
-	/**
-	 * @group attachments
-	 * @group classic-sync
-	 */
-	public function testStoredFileAttachmentPathViaSync() {
-		require_once 'include/sync.inc.php';
-		require_once '../../include/Unicode.inc.php';
-		require_once '../../model/Attachments.inc.php';
-		require_once '../../model/ID.inc.php';
-		
-		$sessionID = \Sync::login();
-		$xml = \Sync::updated($sessionID, time());
-		
-		$updateKey = (string) $xml['updateKey'];
-		$itemKey = \Zotero_ID::getKey();
-		$filename = "tést.pdf";
-		
-		// Create item via sync
-		$data = '<data version="9"><items><item libraryID="'
-			. self::$config['libraryID'] . '" '
-			. 'key="' . $itemKey . '" '
-			. 'itemType="attachment" '
-			. 'dateAdded="2016-03-07 04:53:20" '
-			. 'dateModified="2016-03-07 04:54:09" '
-			. 'mimeType="application/pdf" '
-			. 'linkMode="0">'
-			// See note in testCreateLinkedFileAttachment
-			. '<path>storage:' . \Zotero_Attachments::encodeRelativeDescriptorString($filename) . '</path>'
-			. '</item></items></data>';
-		$response = \Sync::upload($sessionID, $updateKey, $data);
-		\Sync::waitForUpload($sessionID, $response, $this);
-		\Sync::logout($sessionID);
-		
-		$json = API::getItem($itemKey, $this, 'json');
-		$this->assertEquals('imported_file', $json['data']['linkMode']);
-		// Linked file should have path
-		$this->assertEquals($filename, $json['data']['filename']);
 	}
 	
 	/**
@@ -1672,12 +1598,17 @@ class ItemTests extends APITests {
 	}
 	
 	
-	public function testCannotChangeStoragePropertiesInGroupLibraries() {
-		$key = API::groupCreateItem(
-			self::$config['ownedPrivateGroupID'], "book", [], $this, 'key'
-		);
-		$json = API::groupCreateAttachmentItem(
-			self::$config['ownedPrivateGroupID'], "imported_url", [], $key, $this, 'jsonData'
+	public function test_cannot_change_existing_storage_properties_to_null() {
+		$key = API::createItem("book", [], $this, 'key');
+		$json = API::createAttachmentItem(
+			"imported_url",
+			[
+				'md5' => md5(\Zotero_Utilities::randomString(50)),
+				'mtime' => time()
+			],
+			$key,
+			$this,
+			'jsonData'
 		);
 		
 		$key = $json['key'];
@@ -1686,18 +1617,18 @@ class ItemTests extends APITests {
 		$props = ["md5", "mtime"];
 		foreach ($props as $prop) {
 			$json2 = $json;
-			$json2[$prop] = "new" . ucwords($prop);
-			$response = API::groupPut(
-				self::$config['ownedPrivateGroupID'],
+			$json2[$prop] = null;
+			$response = API::userPut(
+				self::$config['userID'],
 				"items/$key",
 				json_encode($json2),
-				array(
+				[
 					"Content-Type: application/json",
 					"If-Unmodified-Since-Version: $version"
-				)
+				]
 			);
 			$this->assert400($response);
-			$this->assertEquals("Cannot change '$prop' directly in group library", $response->getBody());
+			$this->assertEquals("Cannot change existing '$prop' to null", $response->getBody());
 		}
 	}
 	
@@ -2066,7 +1997,7 @@ class ItemTests extends APITests {
 		$this->assert200($response);
 		$this->assertNumResults(1, $response);
 		$json = API::getJSONFromResponse($response);
-		$this->assertContains($parentKeys[0], $json[0]['key']);
+		$this->assertEquals($parentKeys[0], $json[0]['key']);
 		
 		// /top, Atom, in collection, with q for all items
 		$response = API::userGet(
@@ -2088,7 +2019,7 @@ class ItemTests extends APITests {
 		$this->assert200($response);
 		$this->assertNumResults(1, $response);
 		$json = API::getJSONFromResponse($response);
-		$this->assertContains($parentKeys[0], $json[0]['key']);
+		$this->assertEquals($parentKeys[0], $json[0]['key']);
 		
 		// /top, Atom, with q for child item
 		$response = API::userGet(
@@ -2590,27 +2521,27 @@ class ItemTests extends APITests {
 			self::$config['userID'],
 			"items/$key"
 		);
-		$this->assertContains("\"title\": \"$title\"", $response->getBody());
+		$this->assertStringContainsString("\"title\": \"$title\"", $response->getBody());
 		
 		// Test feed (JSON)
 		$response = API::userGet(
 			self::$config['userID'],
 			"items"
 		);
-		$this->assertContains("\"title\": \"$title\"", $response->getBody());
+		$this->assertStringContainsString("\"title\": \"$title\"", $response->getBody());
 		
 		// Test entry (Atom)
 		$response = API::userGet(
 			self::$config['userID'],
 			"items/$key?content=json"
 		);
-		$this->assertContains("\"title\": \"$title\"", $response->getBody());
+		$this->assertStringContainsString("\"title\": \"$title\"", $response->getBody());
 		
 		// Test feed (Atom)
 		$response = API::userGet(
 			self::$config['userID'],
 			"items?content=json"
 		);
-		$this->assertContains("\"title\": \"$title\"", $response->getBody());
+		$this->assertStringContainsString("\"title\": \"$title\"", $response->getBody());
 	}
 }
